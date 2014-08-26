@@ -7,18 +7,27 @@ import (
     zmq "github.com/pebbe/zmq4"
 )
 
-func worker(num int, db *DB, log *LeveledLogger.Logger) {
+func worker(num int, db *DB, log *LeveledLogger.Logger, invc chan workerInvocation) {
     iname := fmt.Sprintf("worker %d", num)
+    defer db.Close()
 
     worker, err := zmq.NewSocket(zmq.REP)
     if err != nil {
         log.Warn(iname, "new socket failed", err)
+        invc <- workerInvocation{success: false, id: num, err: err}
         return
     }
     defer worker.Close()
-    worker.Connect(WORKERS_COMM_CHANNEL)
+
+    err = worker.Connect(WORKERS_COMM_CHANNEL)
+    if err != nil {
+        log.Warn(iname, "socket connect failed", err)
+        invc <- workerInvocation{success: false, id: num, err: err}
+        return
+    }
 
     log.Debug(iname, "ready")
+    invc <- workerInvocation{success: true, id: num, err: nil}
 
     for {
         if msg, err := worker.RecvMessage(0); err == nil {
@@ -37,6 +46,10 @@ func worker(num int, db *DB, log *LeveledLogger.Logger) {
                 res, err = getQuestion(db, msg[1:]...)
             case "questionJoins":
                 res, err = getQuestionJoins(db, msg[1:]...)
+            case "questionLatestComments":
+                res, err = getQuestionLatestComments(db, msg[1:]...)
+            case "questionLatestAnswers":
+                res, err = getQuestionLatestAnswers(db, msg[1:]...)
             case "ping":
                 res = []byte("pong")
             default:

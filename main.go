@@ -27,6 +27,7 @@ func main() {
             CUsers:     flag.String("cusers", "users", "Name of users collection in DB"),
             CQuestions: flag.String("cquestions", "questions", "Name of questions collection in DB"),
             CAnswers:   flag.String("canswers", "answers", "Name of answers collection in DB"),
+            CComments:  flag.String("ccomments", "comments", "Name of comments collection in DB"),
         },
     }
 

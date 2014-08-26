@@ -18,6 +18,12 @@ type Server struct {
     backend  *zmq.Socket
 }
 
+type workerInvocation struct {
+    success bool
+    id      int
+    err     error
+}
+
 func NewServer(port int, log *LeveledLogger.Logger, db *DB) (*Server, error) {
     iname := "NewServer"
 
@@ -58,8 +64,26 @@ func (s *Server) Run(n int) error {
 
     // pool of worker threads
     s.log.Debug(iname, "creating workers pool")
+    invc := make(chan workerInvocation, n)
     for i := 0; i < n; i++ {
-        go worker(i, s.db, s.log)
+        go worker(i, s.db.Copy(), s.log, invc)
+    }
+
+    success := 0
+    var err error
+    for i := 0; i < n; i++ {
+        inv := <-invc
+        if inv.success {
+            success++
+        } else {
+            err = inv.err
+        }
+    }
+    if success < n {
+        s.log.Warn(iname, "workers failed to run", n-success, err)
+    }
+    if success == 0 {
+        return err
     }
 
     //  Connect workers to clients via a proxy
