@@ -11,6 +11,7 @@ type DenormConf struct {
     mongo   MongoConf
     port    *int
     workers *int
+    wbuff   *int
     debug   *bool
 }
 
@@ -20,6 +21,7 @@ func main() {
         debug:   flag.Bool("debug", false, "Enable debug log messages"),
         port:    flag.Int("port", 7710, "ZeroMQ listening port"),
         workers: flag.Int("workers", 5, "Number of workers"),
+        wbuff:   flag.Int("buffer", 100, "Size of one worker's buffer"),
         mongo: MongoConf{
             Port:       flag.Int("mport", 27017, "MongoDB server port"),
             Host:       flag.String("mhost", "127.0.0.1", "MongoDB server host"),
@@ -68,12 +70,8 @@ func main() {
     }
     defer db.Close()
 
-    server, err := NewServer(*conf.port, log, db)
-    if err != nil {
-        log.Error(iname, "failed to create server", err) // this will panic
-    }
-
-    err = server.Run(*conf.workers)
-    log.Error(iname, "server interrupted", err) // this will panic
+    server := NewServer(*conf.port, *conf.workers, *conf.wbuff, db, log)
+    err = server.Run()
+    log.Error(iname, "server run error", err) // this will panic
 
 }

@@ -6,87 +6,111 @@ import (
     zmq "github.com/pebbe/zmq4"
 )
 
-const (
-    WORKERS_COMM_CHANNEL = "inproc://workerscomm"
-)
-
 type Server struct {
-    port     int
-    log      *LeveledLogger.Logger
-    db       *DB
-    frontend *zmq.Socket
-    backend  *zmq.Socket
+    port    int
+    log     *LeveledLogger.Logger
+    db      *DB
+    wn      int
+    workers []*Worker
+    queues  map[int]chan *Work
+    wbuff   int
 }
 
-type workerInvocation struct {
-    success bool
-    id      int
-    err     error
+func NewServer(port int, wn int, wbuff int, db *DB, log *LeveledLogger.Logger) *Server {
+    return &Server{
+        port:    port,
+        log:     log,
+        db:      db,
+        wn:      wn,
+        workers: make([]*Worker, 0, wn),
+        queues:  make(map[int]chan *Work),
+        wbuff:   wbuff,
+    }
 }
 
-func NewServer(port int, log *LeveledLogger.Logger, db *DB) (*Server, error) {
-    iname := "NewServer"
-
-    s := &Server{
-        port: port,
-        log:  log,
-        db:   db,
-    }
-    var err error
-
-    log.Debug(iname, "creating frontend socket")
-    s.frontend, err = zmq.NewSocket(zmq.ROUTER)
-    if err != nil {
-        return nil, err
-    }
-    if err := s.frontend.Bind(
-        fmt.Sprintf("tcp://*:%d", port),
-    ); err != nil {
-        return nil, err
-    }
-
-    log.Debug(iname, "creating backend socket")
-    s.backend, err = zmq.NewSocket(zmq.DEALER)
-    if err != nil {
-        return nil, err
-    }
-    if err := s.backend.Bind(WORKERS_COMM_CHANNEL); err != nil {
-        return nil, err
-    }
-
-    return s, nil
-}
-
-func (s *Server) Run(n int) error {
+func (s *Server) Run() error {
     iname := "Server.Run"
-    defer s.frontend.Close()
-    defer s.backend.Close()
+    addr := fmt.Sprintf("tcp://*:%d", s.port)
 
-    // pool of worker threads
-    s.log.Debug(iname, "creating workers pool")
-    invc := make(chan workerInvocation, n)
-    for i := 0; i < n; i++ {
-        go worker(i, s.db.Copy(), s.log, invc)
-    }
+    // replies queue
+    prodq := make(chan *Product, s.wbuff*s.wn)
 
-    success := 0
-    var err error
-    for i := 0; i < n; i++ {
-        inv := <-invc
-        if inv.success {
-            success++
-        } else {
-            err = inv.err
-        }
+    s.log.Debug(iname, "creating frontend socket")
+    frontend, err := zmq.NewSocket(zmq.ROUTER)
+    if err != nil {
+        return err
     }
-    if success < n {
-        s.log.Warn(iname, "workers failed to run", n-success, err)
-    }
-    if success == 0 {
+    defer frontend.Close()
+    s.log.Debug(iname, "binding frontend socket", addr)
+    if err := frontend.Bind(
+        fmt.Sprintf("tcp://*:%d", s.port),
+    ); err != nil {
         return err
     }
 
-    //  Connect workers to clients via a proxy
-    s.log.Info(iname, "waiting for connections", fmt.Sprintf("tcp://*:%d", s.port))
-    return zmq.Proxy(s.frontend, s.backend, nil)
+    // pool of worker goroutines
+    s.log.Debug(iname, "creating workers pool")
+    for i := 0; i < s.wn; i++ {
+        s.queues[i] = make(chan *Work, s.wbuff)
+        worker := NewWorker(i, s.queues[i], prodq, s.db, s.log)
+        s.workers = append(s.workers, worker)
+        go worker.Run()
+        defer worker.Stop()
+    }
+
+    // reply to requests pending in the replies quque
+    go func() {
+        s.log.Debug(iname, "waiting for payloads")
+        for {
+            prod := <-prodq
+            s.log.Debug(iname, "sending reply", prod)
+            if _, err := frontend.SendMessage(prod.id, prod.success, prod.empty, prod.payload); err != nil {
+                s.log.Warn(iname, "unable to send reply", err)
+            }
+        }
+    }()
+
+    s.log.Info(iname, "listening to incoming requests", addr)
+    for {
+        if msg, err := frontend.RecvMessage(0); err == nil {
+            s.log.Debug(iname, "message received", msg)
+            if len(msg) < 3 {
+                s.log.Debug(iname, "not enough message parts", len(msg))
+                if len(msg) == 2 {
+                    prodq <- &Product{
+                        id:      msg,
+                        success: false,
+                        empty:   false,
+                        payload: []byte("no task specified"),
+                    }
+                }
+                continue
+            }
+            work := Work{
+                id:     msg[:2],
+                params: msg[2:],
+            }
+            s.assign(&work)
+        } else {
+            s.log.Warn(iname, "failed to receive incoming message", err)
+        }
+    }
+
+    return nil
+
+    // now the deferred worker.Stop and frontend.Close will be called
+}
+
+func (s *Server) assign(work *Work) {
+    iname := "Server.assign"
+    i := 0
+    l := len(s.queues[i])
+    for k, v := range s.queues {
+        if len(v) < l {
+            i = k
+            l = len(v)
+        }
+    }
+    s.log.Debug(iname, "assigning to worker", i)
+    s.queues[i] <- work
 }
