@@ -14,7 +14,7 @@ import (
 //  1. Pointer to a Question struct
 //  2. (bool) Does the requested question exist?
 //  3. (error) Nil or an error
-func (w *Worker) getQuestion(id bson.ObjectId) (*Question, bool, error) {
+func (w *Worker) GetQuestion(id bson.ObjectId) (*Question, bool, error) {
     // we use aggregation to bring question to its denormalized form.
     // we only need the last revision of the question's content.
     pipe := w.db.Questions.Pipe([]bson.M{
@@ -77,7 +77,7 @@ func (w *Worker) getQuestion(id bson.ObjectId) (*Question, bool, error) {
 //  1. Pointer to a QuestionJoins struct
 //  2. (bool) Does the requested question exist?
 //  3. (error) Nil or an error
-func (w *Worker) getQuestionJoins(id bson.ObjectId, count, page int) (*QuestionJoins, bool, error) {
+func (w *Worker) GetQuestionJoins(id bson.ObjectId, count, page int) (*[]QuestionJoin, bool, error) {
     pipe := w.db.Questions.Pipe([]bson.M{
         {
             "$match": bson.M{
@@ -133,7 +133,7 @@ func (w *Worker) getQuestionJoins(id bson.ObjectId, count, page int) (*QuestionJ
     if err := pipe.All(&qjs); err != nil {
         return nil, false, err
     }
-    return &QuestionJoins{Joins: qjs}, true, nil
+    return &qjs, true, nil
 }
 
 // getQuestionLatestComments generates a denormalized question comments data.
@@ -147,7 +147,7 @@ func (w *Worker) getQuestionJoins(id bson.ObjectId, count, page int) (*QuestionJ
 //  1. Pointer to a Comments struct
 //  2. (bool) Does the requested question exist?
 //  3. (error) Nil or an error
-func (w *Worker) getQuestionLatestComments(id bson.ObjectId, count, page int) (*Comments, bool, error) {
+func (w *Worker) GetQuestionLatestComments(id bson.ObjectId, count, page int) (*[]Comment, bool, error) {
     cmts := make([]Comment, 0)
     query := w.db.Comments.
         Find(bson.M{"oid": id, "type": "question"}).
@@ -189,5 +189,5 @@ func (w *Worker) getQuestionLatestComments(id bson.ObjectId, count, page int) (*
     for i, _ := range cmts {
         cmts[i].Udisp = names[cmts[i].Uid]
     }
-    return &Comments{Comments: cmts}, true, nil
+    return &cmts, true, nil
 }

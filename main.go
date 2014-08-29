@@ -1,3 +1,5 @@
+// Denormalizer is a ZeroMQ TCP server which receives data query commands and
+// sends the result back as a JSON encoded string.
 package main
 
 import (
@@ -57,21 +59,8 @@ func main() {
 
     log.Debug(iname, "debug mode enabled")
 
-    log.Info(
-        iname,
-        "connecting to MongoDB",
-        *conf.mongo.Host,
-        *conf.mongo.Port,
-        *conf.mongo.DB,
-    )
-    db, err := NewDB(conf.mongo)
-    if err != nil {
-        log.Error(iname, "failed to create a new db", err) // this will panic
-    }
-    defer db.Close()
-
-    server := NewServer(*conf.port, *conf.workers, *conf.wbuff, db, log)
-    err = server.Run()
+    server := NewServer(*conf.port, *conf.workers, *conf.wbuff, &conf.mongo, ll_level)
+    err := server.Run()
     log.Error(iname, "server run error", err) // this will panic
 
 }

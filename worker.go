@@ -6,7 +6,7 @@ import (
     "fmt"
     "github.com/inSituo/LeveledLogger"
     "gopkg.in/mgo.v2/bson"
-    "strconv"
+    "os"
 )
 
 // Work to be done by a worker
@@ -70,12 +70,12 @@ func NewWorker(
     workq chan *Work,
     prodq chan *Product,
     db *DB,
-    log *LeveledLogger.Logger,
+    ll_level int,
 ) *Worker {
     return &Worker{
         ID:    id,
         db:    db.Copy(),
-        log:   log,
+        log:   LeveledLogger.New(os.Stdout, ll_level),
         workq: workq,
         prodq: prodq,
         stopc: make(chan bool),
@@ -102,70 +102,46 @@ func (w *Worker) Run() {
             var exists bool
             var res interface{}
             switch work.params[0] {
-            case "question":
-                if len(work.params) != 2 {
-                    err = errors.New("Incorrect number of arguments")
-                    break
+            case "Q": // question
+                var qid bson.ObjectId
+                qid, err = parseOid(work.params)
+                if err == nil {
+                    res, exists, err = w.GetQuestion(qid)
                 }
-                qid := work.params[1]
-                if !bson.IsObjectIdHex(qid) {
-                    err = errors.New("Parameter is an invalid BSON ObjectId")
-                    break
+            case "QJ": // question joins
+                var count, page int
+                var qid bson.ObjectId
+                qid, count, page, err = parseOidCountPage(work.params)
+                if err == nil {
+                    res, exists, err = w.GetQuestionJoins(qid, count, page)
                 }
-                res, exists, err = w.getQuestion(bson.ObjectIdHex(qid))
-            case "questionJoins":
-                if len(work.params) != 4 {
-                    err = errors.New("Incorrect number of arguments")
-                    break
+            case "QLC": // question latest comments
+                var count, page int
+                var qid bson.ObjectId
+                qid, count, page, err = parseOidCountPage(work.params)
+                if err == nil {
+                    res, exists, err = w.GetQuestionLatestComments(qid, count, page)
                 }
-                qid := work.params[1]
-                if !bson.IsObjectIdHex(qid) {
-                    err = errors.New("First argument is an invalid BSON ObjectId")
-                    break
+            case "A": // answer
+                var aid bson.ObjectId
+                aid, err = parseOid(work.params)
+                if err == nil {
+                    res, exists, err = w.GetAnswer(aid)
                 }
-                count, err := strconv.Atoi(work.params[2])
-                if err != nil {
-                    err = errors.New("Second argument is not an integer")
-                    break
+            case "QTA": // question top answers
+                var count, page int
+                var qid bson.ObjectId
+                qid, count, page, err = parseOidCountPage(work.params)
+                if err == nil {
+                    res, exists, err = w.GetTopAnswers(qid, count, page)
                 }
-                page, err := strconv.Atoi(work.params[3])
-                if err != nil {
-                    err = errors.New("Third argument is not an integer")
-                    break
+            case "QLA": // question latest answers
+                var count, page int
+                var qid bson.ObjectId
+                qid, count, page, err = parseOidCountPage(work.params)
+                if err == nil {
+                    res, exists, err = w.GetLatestAnswers(qid, count, page)
                 }
-                res, exists, err = w.getQuestionJoins(bson.ObjectIdHex(qid), count, page)
-            case "questionLatestComments":
-                if len(work.params) != 4 {
-                    err = errors.New("Incorrect number of arguments")
-                    break
-                }
-                qid := work.params[1]
-                if !bson.IsObjectIdHex(qid) {
-                    err = errors.New("First argument is an invalid BSON ObjectId")
-                    break
-                }
-                count, err := strconv.Atoi(work.params[2])
-                if err != nil {
-                    err = errors.New("Second argument is not an integer")
-                    break
-                }
-                page, err := strconv.Atoi(work.params[3])
-                if err != nil {
-                    err = errors.New("Third argument is not an integer")
-                    break
-                }
-                res, exists, err = w.getQuestionLatestComments(bson.ObjectIdHex(qid), count, page)
-            case "answer":
-                if len(work.params) != 2 {
-                    err = errors.New("Incorrect number of arguments")
-                    break
-                }
-                qid := work.params[1]
-                if !bson.IsObjectIdHex(qid) {
-                    err = errors.New("Parameter is an invalid BSON ObjectId")
-                    break
-                }
-                res, exists, err = w.getAnswer(bson.ObjectIdHex(qid))
             default:
                 err = errors.New("unknown task")
             }
@@ -178,7 +154,7 @@ func (w *Worker) Run() {
                 w.prodq <- &Product{
                     id:      work.id,
                     success: true,
-                    empty:   exists,
+                    empty:   !exists,
                     payload: payload,
                 }
             } else {

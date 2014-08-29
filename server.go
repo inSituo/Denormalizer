@@ -4,27 +4,33 @@ import (
     "fmt"
     "github.com/inSituo/LeveledLogger"
     zmq "github.com/pebbe/zmq4"
+    "os"
+    // "runtime"
+    "sync"
+    "time"
 )
 
 type Server struct {
-    port    int
-    log     *LeveledLogger.Logger
-    db      *DB
-    wn      int
-    workers []*Worker
-    queues  map[int]chan *Work
-    wbuff   int
+    port     int
+    log      *LeveledLogger.Logger
+    ll_level int
+    dbconf   *MongoConf
+    wn       int
+    workers  []*Worker
+    queues   map[int]chan *Work
+    wbuff    int
 }
 
-func NewServer(port int, wn int, wbuff int, db *DB, log *LeveledLogger.Logger) *Server {
+func NewServer(port int, wn int, wbuff int, dbconf *MongoConf, ll_level int) *Server {
     return &Server{
-        port:    port,
-        log:     log,
-        db:      db,
-        wn:      wn,
-        workers: make([]*Worker, 0, wn),
-        queues:  make(map[int]chan *Work),
-        wbuff:   wbuff,
+        port:     port,
+        log:      LeveledLogger.New(os.Stdout, ll_level),
+        dbconf:   dbconf,
+        wn:       wn,
+        workers:  make([]*Worker, 0, wn),
+        queues:   make(map[int]chan *Work),
+        wbuff:    wbuff,
+        ll_level: ll_level,
     }
 }
 
@@ -32,11 +38,26 @@ func (s *Server) Run() error {
     iname := "Server.Run"
     addr := fmt.Sprintf("tcp://*:%d", s.port)
 
-    // replies queue
-    prodq := make(chan *Product, s.wbuff*s.wn)
+    s.log.Info(
+        iname,
+        "connecting to MongoDB",
+        s.dbconf.Host,
+        s.dbconf.Port,
+        s.dbconf.DB,
+    )
+    db, err := NewDB(s.dbconf)
+    if err != nil {
+        return err
+    }
+    defer db.Close()
 
     s.log.Debug(iname, "creating frontend socket")
-    frontend, err := zmq.NewSocket(zmq.ROUTER)
+    felock := sync.Mutex{}
+    context, err := zmq.NewContext()
+    if err != nil {
+        return err
+    }
+    frontend, err := context.NewSocket(zmq.ROUTER)
     if err != nil {
         return err
     }
@@ -48,36 +69,48 @@ func (s *Server) Run() error {
         return err
     }
 
+    // replies queue
+    outgoing := make(chan *Product, s.wbuff*s.wn)
+
     // pool of worker goroutines
     s.log.Debug(iname, "creating workers pool")
     for i := 0; i < s.wn; i++ {
         s.queues[i] = make(chan *Work, s.wbuff)
-        worker := NewWorker(i, s.queues[i], prodq, s.db, s.log)
+        worker := NewWorker(i, s.queues[i], outgoing, db, s.ll_level)
         s.workers = append(s.workers, worker)
         go worker.Run()
         defer worker.Stop()
     }
 
-    // reply to requests pending in the replies quque
+    incoming := make(chan []string, s.wbuff*s.wn)
+
+    // receiver:
     go func() {
-        s.log.Debug(iname, "waiting for payloads")
+        s.log.Info(iname, "listening to incoming requests", addr)
         for {
-            prod := <-prodq
-            s.log.Debug(iname, "sending reply", prod)
-            if _, err := frontend.SendMessage(prod.id, prod.success, prod.empty, prod.payload); err != nil {
-                s.log.Warn(iname, "unable to send reply", err)
+            felock.Lock() // lock socket access
+            msg, err := frontend.RecvMessage(zmq.DONTWAIT)
+            felock.Unlock() // release socket access
+            if err == nil {
+                incoming <- msg
+            } else {
+                s.log.Warn(iname, "failed to receive incoming message", err)
             }
+            // receiving 500 requests/second should be enough and not kill
+            // the cpu.
+            time.Sleep(2 * time.Millisecond)
         }
     }()
 
-    s.log.Info(iname, "listening to incoming requests", addr)
-    for {
-        if msg, err := frontend.RecvMessage(0); err == nil {
+    // dispatcher
+    go func() {
+        for {
+            msg := <-incoming
             s.log.Debug(iname, "message received", msg)
             if len(msg) < 3 {
                 s.log.Debug(iname, "not enough message parts", len(msg))
                 if len(msg) == 2 {
-                    prodq <- &Product{
+                    outgoing <- &Product{
                         id:      msg,
                         success: false,
                         empty:   false,
@@ -91,11 +124,21 @@ func (s *Server) Run() error {
                 params: msg[2:],
             }
             s.assign(&work)
-        } else {
-            s.log.Warn(iname, "failed to receive incoming message", err)
+        }
+    }()
+
+    // reply to requests pending in the replies quque
+    s.log.Debug(iname, "waiting for payloads")
+    for {
+        prod := <-outgoing
+        s.log.Debug(iname, "sending reply", prod)
+        felock.Lock() // lock socket access
+        _, err := frontend.SendMessage(prod.id, prod.success, prod.empty, prod.payload)
+        felock.Unlock() // release socket access
+        if err != nil {
+            s.log.Warn(iname, "unable to send reply", err)
         }
     }
-
     return nil
 
     // now the deferred worker.Stop and frontend.Close will be called

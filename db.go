@@ -24,7 +24,7 @@ type DB struct {
     conf      *MongoConf
 }
 
-func NewDB(conf MongoConf) (*DB, error) {
+func NewDB(conf *MongoConf) (*DB, error) {
     url := fmt.Sprintf("%s:%d", *conf.Host, *conf.Port)
 
     msession, err := mgo.Dial(url)
@@ -39,7 +39,7 @@ func NewDB(conf MongoConf) (*DB, error) {
         Answers:   mdb.C(*conf.CAnswers),
         Comments:  mdb.C(*conf.CComments),
         session:   msession,
-        conf:      &conf,
+        conf:      conf,
     }
 
     return db, nil

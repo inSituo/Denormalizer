@@ -28,20 +28,12 @@ type QuestionJoin struct {
     Udisp string        `bson:"udisp" json:"udisp"`
 }
 
-type QuestionJoins struct {
-    Joins []QuestionJoin `bson:"joins" json:"joins"`
-}
-
 type Comment struct {
     ID      bson.ObjectId `bson:"_id" json:"id"`
     Uid     bson.ObjectId `bson:"uid" json:"uid"`
     Udisp   string        `bson:"udisp" json:"udisp"`
     TS      int           `bson:"ts" json:"ts"`
     Content string        `bson:"content" json:"content"`
-}
-
-type Comments struct {
-    Comments []Comment `bson:"comments" json:"comments"`
 }
 
 type Answer struct {
