@@ -20,8 +20,6 @@ type Server struct {
     ll_level int
     dbconf   *MongoConf
     wn       int
-    workers  []*Worker
-    queues   map[int]chan *Work
     wbuff    int
 }
 
@@ -31,8 +29,6 @@ func NewServer(port int, wn int, wbuff int, dbconf *MongoConf, ll_level int) *Se
         log:      LeveledLogger.New(os.Stdout, ll_level),
         dbconf:   dbconf,
         wn:       wn,
-        workers:  make([]*Worker, 0, wn),
-        queues:   make(map[int]chan *Work),
         wbuff:    wbuff,
         ll_level: ll_level,
     }
@@ -73,20 +69,17 @@ func (s *Server) Run() error {
         return err
     }
 
-    // replies queue
     outgoing := make(chan *Product, s.wbuff*s.wn)
+    incoming := make(chan []string, s.wbuff*s.wn)
+    workq := make(chan *Work, s.wbuff*s.wn)
 
     // pool of worker goroutines
     s.log.Debug(iname, "creating workers pool")
     for i := 0; i < s.wn; i++ {
-        s.queues[i] = make(chan *Work, s.wbuff)
-        worker := NewWorker(i, s.queues[i], outgoing, db, s.ll_level)
-        s.workers = append(s.workers, worker)
+        worker := NewWorker(i, workq, outgoing, db, s.ll_level)
         go worker.Run()
         defer worker.Stop()
     }
-
-    incoming := make(chan []string, s.wbuff*s.wn)
 
     // receiver:
     go func() {
@@ -135,7 +128,7 @@ func (s *Server) Run() error {
                 id:     msg[:2],
                 params: msg[2:],
             }
-            s.assign(&work)
+            workq <- &work
         }
     }()
 
@@ -156,18 +149,4 @@ func (s *Server) Run() error {
     return nil
 
     // now the deferred worker.Stop and frontend.Close will be called
-}
-
-func (s *Server) assign(work *Work) {
-    iname := "Server.assign"
-    i := 0
-    l := len(s.queues[i])
-    for k, v := range s.queues {
-        if len(v) < l {
-            i = k
-            l = len(v)
-        }
-    }
-    s.log.Debug(iname, "assigning to worker", i)
-    s.queues[i] <- work
 }
