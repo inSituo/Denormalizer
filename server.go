@@ -5,9 +5,13 @@ import (
     "github.com/inSituo/LeveledLogger"
     zmq "github.com/pebbe/zmq4"
     "os"
-    // "runtime"
     "sync"
     "time"
+)
+
+const (
+    POLL_TIMEOUT  = 1 * time.Millisecond
+    THREADS_SLEEP = 5 * time.Millisecond
 )
 
 type Server struct {
@@ -41,9 +45,9 @@ func (s *Server) Run() error {
     s.log.Info(
         iname,
         "connecting to MongoDB",
-        s.dbconf.Host,
-        s.dbconf.Port,
-        s.dbconf.DB,
+        *s.dbconf.Host,
+        *s.dbconf.Port,
+        *s.dbconf.DB,
     )
     db, err := NewDB(s.dbconf)
     if err != nil {
@@ -86,19 +90,27 @@ func (s *Server) Run() error {
 
     // receiver:
     go func() {
+        poller := zmq.NewPoller()
+        poller.Add(frontend, zmq.POLLIN)
         s.log.Info(iname, "listening to incoming requests", addr)
         for {
-            felock.Lock() // lock socket access
-            msg, err := frontend.RecvMessage(zmq.DONTWAIT)
-            felock.Unlock() // release socket access
+            felock.Lock()
+            polled, err := poller.Poll(POLL_TIMEOUT)
             if err == nil {
-                incoming <- msg
+                if len(polled) > 0 {
+                    msg, err := frontend.RecvMessage(0)
+                    if err == nil {
+                        incoming <- msg
+                    } else {
+                        s.log.Warn(iname, "failed to receive incoming message", err)
+                    }
+                }
             } else {
-                s.log.Warn(iname, "failed to receive incoming message", err)
+                s.log.Warn(iname, "failed to poll socket", err)
             }
-            // receiving 500 requests/second should be enough and not kill
-            // the cpu.
-            time.Sleep(2 * time.Millisecond)
+            felock.Unlock()
+            // give other threads a chance to obtain the lock:
+            time.Sleep(THREADS_SLEEP)
         }
     }()
 
@@ -132,12 +144,14 @@ func (s *Server) Run() error {
     for {
         prod := <-outgoing
         s.log.Debug(iname, "sending reply", prod)
-        felock.Lock() // lock socket access
+        felock.Lock()
         _, err := frontend.SendMessage(prod.id, prod.success, prod.empty, prod.payload)
-        felock.Unlock() // release socket access
+        felock.Unlock()
         if err != nil {
             s.log.Warn(iname, "unable to send reply", err)
         }
+        // give other threads a chance to obtain the lock:
+        time.Sleep(THREADS_SLEEP)
     }
     return nil
 
